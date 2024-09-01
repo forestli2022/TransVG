@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from pytorch_pretrained_bert.modeling import BertModel
-from .CLIP import build_clip
+from .clip.clip import load
 from .vl_transformer import build_vl_transformer
 from utils.box_utils import xywh2xyxy
 
@@ -16,18 +16,16 @@ class TransVG(nn.Module):
         self.num_visu_token = int((args.imsize / divisor) ** 2)
         self.num_text_token = args.max_query_len
 
-        self.clip, _ = build_clip(args)
-        self.clip = self.clip.float().to(args.device)
-        self.visumodel = self.clip.visual
-        # self.visumodel = build_detr(args)
-        # self.textmodel = build_bert(args)
+        self.modified_clip, _ = load(args.backbone, args.device)
+        self.visumodel = self.modified_clip.visual
+        self.linguistic_model = self.modified_clip.linguistic
 
         num_total = self.num_visu_token + self.num_text_token + 1
         self.vl_pos_embed = nn.Embedding(num_total, hidden_dim)
         self.reg_token = nn.Embedding(1, hidden_dim)
 
-        self.visu_proj = nn.Linear(self.visumodel.proj.shape[1], hidden_dim)
-        self.text_proj = nn.Linear(self.visumodel.proj.shape[1], hidden_dim)
+        self.visu_proj = nn.Linear(self.modified_clip.clip.visual.proj.shape[1], hidden_dim)
+        self.text_proj = nn.Linear(self.modified_clip.clip.visual.proj.shape[1], hidden_dim)
 
         self.vl_transformer = build_vl_transformer(args)
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
@@ -38,15 +36,20 @@ class TransVG(nn.Module):
 
 
     def forward(self, img_data, text_data):
+        print(text_data.tensors.shape)
+        print(img_data.tensors.shape)
+
         bs = img_data.tensors.shape[0]
         preprocessed_img_data = self.preprocess(img_data)
 
         # visual encoder
         visu_src = self.visumodel(preprocessed_img_data)
+        print(visu_src.shape)
         visu_src = self.visu_proj(visu_src)
 
         # language encoderd
-        text_src = self.clip.encode_text(text_data.tensors)
+        text_src = self.linguistic_model(text_data.tensors)
+        print(text_src.shape)
         text_src = self.text_proj(text_src)
 
         # target regression token
