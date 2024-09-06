@@ -13,19 +13,19 @@ class TransVG(nn.Module):
         super(TransVG, self).__init__()
         hidden_dim = args.vl_hidden_dim
         divisor = 16 if args.dilation else 32
-        self.num_visu_token = int((args.imsize / divisor) ** 2)
-        self.num_text_token = args.max_query_len
+        self.num_visu_token = int((args.imsize / divisor) ** 2) + 1
+        self.num_text_token = 77
 
         self.modified_clip, _ = load(args.backbone, args.device)
+        self.modified_clip = self.modified_clip.float().to(args.device)
         self.visumodel = self.modified_clip.visual
-        self.linguistic_model = self.modified_clip.linguistic
 
         num_total = self.num_visu_token + self.num_text_token + 1
         self.vl_pos_embed = nn.Embedding(num_total, hidden_dim)
         self.reg_token = nn.Embedding(1, hidden_dim)
 
-        self.visu_proj = nn.Linear(self.modified_clip.clip.visual.proj.shape[1], hidden_dim)
-        self.text_proj = nn.Linear(self.modified_clip.clip.visual.proj.shape[1], hidden_dim)
+        self.visu_proj = nn.Linear(self.modified_clip.visual.proj.shape[1], hidden_dim)
+        self.text_proj = nn.Linear(self.modified_clip.visual.proj.shape[1], hidden_dim)
 
         self.vl_transformer = build_vl_transformer(args)
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
@@ -36,35 +36,32 @@ class TransVG(nn.Module):
 
 
     def forward(self, img_data, text_data):
-        print(text_data.tensors.shape)
-        print(img_data.tensors.shape)
-
         bs = img_data.tensors.shape[0]
         preprocessed_img_data = self.preprocess(img_data)
 
         # visual encoder
-        visu_src = self.visumodel(preprocessed_img_data)
-        print(visu_src.shape)
+        with torch.no_grad():
+            visu_src = self.visumodel(preprocessed_img_data)
         visu_src = self.visu_proj(visu_src)
+        visu_src = visu_src.permute(1, 0, 2)
 
         # language encoderd
-        text_src = self.linguistic_model(text_data.tensors)
-        print(text_src.shape)
+        with torch.no_grad():
+            text_src = self.modified_clip.encode_text(text_data.tensors)
         text_src = self.text_proj(text_src)
+        text_src = text_src.permute(1, 0, 2)
 
         # target regression token
         tgt_src = self.reg_token.weight.unsqueeze(1).repeat(1, bs, 1)
 
-        print(tgt_src.shape, text_src.shape, visu_src.shape)
-        
         vl_src = torch.cat([tgt_src, text_src, visu_src], dim=0)
         vl_pos = self.vl_pos_embed.weight.unsqueeze(1).repeat(1, bs, 1)
-        print(vl_pos.shape)
 
         vg_hs = self.vl_transformer(vl_src, None, vl_pos) # (1+L+N)xBxC
         vg_hs = vg_hs[0]
 
         pred_box = self.bbox_embed(vg_hs).sigmoid()
+
 
         return pred_box
 

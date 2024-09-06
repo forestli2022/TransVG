@@ -17,14 +17,14 @@ import utils.misc as utils
 from models import build_model
 from datasets import build_dataset
 from engine import train_one_epoch, validate
+import clip
 
 
 def get_args_parser():
     parser = argparse.ArgumentParser('Set transformer detector', add_help=False)
     parser.add_argument('--lr', default=1e-4, type=float)
-    parser.add_argument('--lr_bert', default=1e-5, type=float)
-    parser.add_argument('--lr_visu_cnn', default=1e-5, type=float)
-    parser.add_argument('--lr_visu_tra', default=1e-5, type=float)
+    parser.add_argument('--lr_text', default=1e-5, type=float)
+    parser.add_argument('--lr_visu', default=1e-5, type=float)
     parser.add_argument('--batch_size', default=8, type=int)
     parser.add_argument('--weight_decay', default=1e-4, type=float)
     parser.add_argument('--epochs', default=90, type=int)
@@ -50,7 +50,6 @@ def get_args_parser():
     parser.add_argument('--model_name', type=str, default='TransVG',
                         help="Name of model to be exploited.")
     
-    # DETR parameters
     # * Backbone
     parser.add_argument('--backbone', default='resnet50', type=str,
                         help="Name of the convolutional backbone to use")
@@ -74,13 +73,10 @@ def get_args_parser():
                         help="Number of query slots")
     parser.add_argument('--pre_norm', action='store_true')
 
-    parser.add_argument('--imsize', default=640, type=int, help='image size')
+    parser.add_argument('--imsize', default=224, type=int, help='image size')
     parser.add_argument('--emb_size', default=512, type=int,
                         help='fusion module embedding dimensions')
 
-    # Transformers in two branches
-    parser.add_argument('--bert_enc_num', default=12, type=int)
-    parser.add_argument('--detr_enc_num', default=6, type=int)
 
     # Vision-Language Transformer
     parser.add_argument('--vl_dropout', default=0.1, type=float,
@@ -111,8 +107,6 @@ def get_args_parser():
                         help='device to use for training / testing')
     parser.add_argument('--seed', default=13, type=int)
     parser.add_argument('--resume', default='', help='resume from checkpoint')
-    parser.add_argument('--detr_model', default='./saved_models/detr-r50.pth', type=str, help='detr model')
-    parser.add_argument('--bert_model', default='bert-base-uncased', type=str, help='bert model')
     parser.add_argument('--light', dest='light', default=False, action='store_true', help='if use smaller model')
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='start epoch')
@@ -147,15 +141,13 @@ def main(args):
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('number of params:', n_parameters)
 
-    visu_cnn_param = [p for n, p in model_without_ddp.named_parameters() if (("visumodel" in n) and ("backbone" in n) and p.requires_grad)]
-    visu_tra_param = [p for n, p in model_without_ddp.named_parameters() if (("visumodel" in n) and ("backbone" not in n) and p.requires_grad)]
-    text_tra_param = [p for n, p in model_without_ddp.named_parameters() if (("textmodel" in n) and p.requires_grad)]
+    visu_param = [p for n, p in model_without_ddp.named_parameters() if (("visumodel" in n) and p.requires_grad)]
+    text_param = [p for n, p in model_without_ddp.named_parameters() if (("textmodel" in n) and p.requires_grad)]
     rest_param = [p for n, p in model_without_ddp.named_parameters() if (("visumodel" not in n) and ("textmodel" not in n) and p.requires_grad)]
 
     param_list = [{"params": rest_param},
-                   {"params": visu_cnn_param, "lr": args.lr_visu_cnn},
-                   {"params": visu_tra_param, "lr": args.lr_visu_tra},
-                   {"params": text_tra_param, "lr": args.lr_bert},
+                   {"params": visu_param, "lr": args.lr_visu},
+                   {"params": text_param, "lr": args.lr_text},
                    ]
     visu_param = [p for n, p in model_without_ddp.named_parameters() if "visumodel" in n and p.requires_grad]
     text_param = [p for n, p in model_without_ddp.named_parameters() if "textmodel" in n and p.requires_grad]
@@ -219,11 +211,6 @@ def main(args):
             optimizer.load_state_dict(checkpoint['optimizer'])
             lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
             args.start_epoch = checkpoint['epoch'] + 1
-    elif args.detr_model is not None:
-        checkpoint = torch.load(args.detr_model, map_location='cpu')
-        missing_keys, unexpected_keys = model_without_ddp.visumodel.load_state_dict(checkpoint['model'], strict=False)
-        print('Missing keys when loading detr model:')
-        print(missing_keys)
 
     output_dir = Path(args.output_dir)
     if args.output_dir and utils.is_main_process():

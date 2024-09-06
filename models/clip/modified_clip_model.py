@@ -300,7 +300,7 @@ class ModifiedCLIP(nn.Module):
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
         # add new linguistic model
-        self.linguistic = CLIPTextEncoder(self)
+        # self.linguistic = CLIPTextEncoder(self)
 
         self.initialize_parameters()
 
@@ -349,7 +349,20 @@ class ModifiedCLIP(nn.Module):
         return self.visual(image.type(self.dtype))
 
     def encode_text(self, text):
-        return self.linguistic(text)
+        x = self.token_embedding(text).type(self.dtype)  # [batch_size, n_ctx, d_model]
+
+        x = x + self.positional_embedding.type(self.dtype)
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        x = self.transformer(x)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+        x = self.ln_final(x).type(self.dtype)
+
+        # x.shape = [batch_size, n_ctx, transformer.width]
+        # take features from the eot embedding (eot_token is the highest number in each sequence)
+        # TODO: ModifiedCLIP
+        # x = x[torch.arange(x.shape[0]), text.argmax(dim=-1)] @ self.text_projection
+        x = x @ self.text_projection
+        return x
 
     def forward(self, image, text):
         image_features = self.encode_image(image)
@@ -369,29 +382,30 @@ class ModifiedCLIP(nn.Module):
 
 
 # similarly, add a text model
-class CLIPTextEncoder(torch.nn.Module):
-    def __init__(self, clip_model: ModifiedCLIP):
-        super(CLIPTextEncoder, self).__init__()
-        self.token_embedding = clip_model.token_embedding
-        self.positional_embedding = clip_model.positional_embedding
-        self.transformer = clip_model.transformer
-        self.ln_final = clip_model.ln_final
-        self.text_projection = clip_model.text_projection
+# class CLIPTextEncoder(torch.nn.Module):
+#     def __init__(self, clip_model: ModifiedCLIP):
+#         super(CLIPTextEncoder, self).__init__()
+#         self.token_embedding = clip_model.token_embedding
+#         self.positional_embedding = clip_model.positional_embedding
+#         self.transformer = clip_model.transformer
+#         self.ln_final = clip_model.ln_final
+#         self.text_projection = clip_model.text_projection
 
-    def forward(self, text):
-        x = self.token_embedding(text).type(self.dtype)  # [batch_size, n_ctx, d_model]
+#     def forward(self, text):
+#         x = self.token_embedding(text).type(self.dtype)  # [batch_size, n_ctx, d_model]
 
-        x = x + self.positional_embedding.type(self.dtype)
-        x = x.permute(1, 0, 2)  # NLD -> LND
-        x = self.transformer(x)
-        x = x.permute(1, 0, 2)  # LND -> NLD
-        x = self.ln_final(x).type(self.dtype)
+#         x = x + self.positional_embedding.type(self.dtype)
+#         x = x.permute(1, 0, 2)  # NLD -> LND
+#         x = self.transformer(x)
+#         x = x.permute(1, 0, 2)  # LND -> NLD
+#         x = self.ln_final(x).type(self.dtype)
 
-        # x.shape = [batch_size, n_ctx, transformer.width]
-        # take features from the eot embedding (eot_token is the highest number in each sequence)
-        # TODO: ModifiedCLIP
-        # x = x[torch.arange(x.shape[0]), text.argmax(dim=-1)] @ self.text_projection
-        x = x @ self.text_projection
+#         # x.shape = [batch_size, n_ctx, transformer.width]
+#         # take features from the eot embedding (eot_token is the highest number in each sequence)
+#         # TODO: ModifiedCLIP
+#         # x = x[torch.arange(x.shape[0]), text.argmax(dim=-1)] @ self.text_projection
+#         x = x @ self.text_projection
+#         return x
 
 
 def convert_weights(model: nn.Module):
