@@ -363,6 +363,20 @@ class ModifiedCLIP(nn.Module):
         # x = x[torch.arange(x.shape[0]), text.argmax(dim=-1)] @ self.text_projection
         x = x @ self.text_projection
         return x
+    
+    def encode_token(self, token):
+        x = token + self.positional_embedding.type(self.dtype)
+        x = x.permute(1, 0, 2)  # NLD -> LND
+        x = self.transformer(x)
+        x = x.permute(1, 0, 2)  # LND -> NLD
+        x = self.ln_final(x).type(self.dtype)
+
+        # x.shape = [batch_size, n_ctx, transformer.width]
+        # take features from the eot embedding (eot_token is the highest number in each sequence)
+        # TODO: ModifiedCLIP
+        # x = x[torch.arange(x.shape[0]), text.argmax(dim=-1)] @ self.text_projection
+        x = x @ self.text_projection
+        return x
 
     def forward(self, image, text):
         image_features = self.encode_image(image)

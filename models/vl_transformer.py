@@ -129,9 +129,9 @@ def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
 
-def build_vl_transformer(args):
+def build_vl_transformer(args, vl_hidden_dim):
     return VisionLanguageEncoder(
-        d_model=args.vl_hidden_dim,
+        d_model=vl_hidden_dim,
         dropout=args.vl_dropout,
         nhead=args.vl_nheads,
         dim_feedforward=args.vl_dim_feedforward,

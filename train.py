@@ -53,8 +53,6 @@ def get_args_parser():
     # * Backbone
     parser.add_argument('--backbone', default='resnet50', type=str,
                         help="Name of the convolutional backbone to use")
-    parser.add_argument('--dilation', action='store_true',
-                        help="If true, we replace stride with dilation in the last convolutional block (DC5)")
     parser.add_argument('--position_embedding', default='sine', type=str, choices=('sine', 'learned'), help="Type of positional embedding to use on top of the image features")
     # * Transformer
     parser.add_argument('--enc_layers', default=6, type=int,
@@ -63,8 +61,6 @@ def get_args_parser():
                         help="Number of decoding layers in the transformer")
     parser.add_argument('--dim_feedforward', default=2048, type=int,
                         help="Intermediate size of the feedforward layers in the transformer blocks")
-    parser.add_argument('--hidden_dim', default=256, type=int,
-                        help="Size of the embeddings (dimension of the transformer)")
     parser.add_argument('--dropout', default=0.1, type=float,
                         help="Dropout applied in the transformer")
     parser.add_argument('--nheads', default=8, type=int,
@@ -83,8 +79,6 @@ def get_args_parser():
                         help="Dropout applied in the vision-language transformer")
     parser.add_argument('--vl_nheads', default=8, type=int,
                         help="Number of attention heads inside the vision-language transformer's attentions")
-    parser.add_argument('--vl_hidden_dim', default=256, type=int,
-                        help='Size of the embeddings (dimension of the vision-language transformer)')
     parser.add_argument('--vl_dim_feedforward', default=2048, type=int,
                         help="Intermediate size of the feedforward layers in the vision-language transformer blocks")
     parser.add_argument('--vl_enc_layers', default=6, type=int,
@@ -97,7 +91,7 @@ def get_args_parser():
                         help='location of pre-parsed dataset info')
     parser.add_argument('--dataset', default='referit', type=str,
                         help='referit/unc/unc+/gref/gref_umd')
-    parser.add_argument('--max_query_len', default=20, type=int,
+    parser.add_argument('--max_query_len', default=77, type=int,
                         help='maximum time steps (lang length) per batch')
     
     # dataset parameters
@@ -116,6 +110,11 @@ def get_args_parser():
     parser.add_argument('--world_size', default=1, type=int,
                         help='number of distributed processes')
     parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
+    
+    # prompt
+    parser.add_argument('--prompt_length', default=0, type=int,
+                        help='length of prompt')
+    
     return parser
 
 

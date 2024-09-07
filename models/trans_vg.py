@@ -11,12 +11,13 @@ from utils.box_utils import xywh2xyxy
 class TransVG(nn.Module):
     def __init__(self, args):
         super(TransVG, self).__init__()
-        hidden_dim = args.vl_hidden_dim
-        divisor = 16 if args.dilation else 32
+        divisor = get_clip_divisor(args.backbone)
         self.num_visu_token = int((args.imsize / divisor) ** 2) + 1
-        self.num_text_token = 77
+        self.num_text_token = args.max_query_len
 
         self.modified_clip, _ = load(args.backbone, args.device)
+        hidden_dim = self.modified_clip.visual.output_dim
+        print(hidden_dim)
         self.modified_clip = self.modified_clip.float().to(args.device)
         self.visumodel = self.modified_clip.visual
 
@@ -24,11 +25,11 @@ class TransVG(nn.Module):
         self.vl_pos_embed = nn.Embedding(num_total, hidden_dim)
         self.reg_token = nn.Embedding(1, hidden_dim)
 
-        self.visu_proj = nn.Linear(self.modified_clip.visual.proj.shape[1], hidden_dim)
-        self.text_proj = nn.Linear(self.modified_clip.visual.proj.shape[1], hidden_dim)
-
-        self.vl_transformer = build_vl_transformer(args)
+        self.vl_transformer = build_vl_transformer(args, vl_hidden_dim=hidden_dim)
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
+
+        # prompt
+        self.prompt = torch.randn(1, args.prompt_length, hidden_dim, requires_grad=True).to(args.device)
 
     def preprocess(self, img_data):
         # preprocess img_data as NestedTensor
@@ -42,13 +43,17 @@ class TransVG(nn.Module):
         # visual encoder
         with torch.no_grad():
             visu_src = self.visumodel(preprocessed_img_data)
-        visu_src = self.visu_proj(visu_src)
         visu_src = visu_src.permute(1, 0, 2)
 
-        # language encoderd
+        # add prompts to tokens
+        tokens = self.modified_clip.token_embedding(text_data.tensors).type(self.modified_clip.dtype)
+        expanded_prompt = self.prompt.expand(bs, -1, -1)
+        tokens = torch.cat([expanded_prompt, tokens], dim=1)
+        tokens = tokens[:, :self.num_text_token, :]
+
+        # language encoder
         with torch.no_grad():
-            text_src = self.modified_clip.encode_text(text_data.tensors)
-        text_src = self.text_proj(text_src)
+            text_src = self.modified_clip.encode_token(tokens)
         text_src = text_src.permute(1, 0, 2)
 
         # target regression token
@@ -79,3 +84,16 @@ class MLP(nn.Module):
         for i, layer in enumerate(self.layers):
             x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
         return x
+    
+
+# new: automatically get the divisor from clip models
+def get_clip_divisor(backbone: str):
+    divisor_dict = {
+    "ViT-B/32": 32,
+    "ViT-B/16": 16,
+    "ViT-L/14": 14,
+    "ViT-L/14@336px": 14,
+    }
+    if backbone not in divisor_dict.keys():
+        return 1
+    return divisor_dict[backbone]

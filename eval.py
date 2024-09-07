@@ -54,12 +54,10 @@ def get_args_parser():
     parser.add_argument('--bert_enc_num', default=12, type=int)
     parser.add_argument('--detr_enc_num', default=6, type=int)
 
-    # DETR parameters
+    # CLIP parameters
     # * Backbone
     parser.add_argument('--backbone', default='resnet50', type=str,
                         help="Name of the convolutional backbone to use")
-    parser.add_argument('--dilation', action='store_true',
-                        help="If true, we replace stride with dilation in the last convolutional block (DC5)")
     parser.add_argument('--position_embedding', default='sine', type=str, choices=('sine', 'learned'), help="Type of positional embedding to use on top of the image features")
     # * Transformer
     parser.add_argument('--enc_layers', default=6, type=int,
@@ -68,7 +66,7 @@ def get_args_parser():
                         help="Number of decoding layers in the transformer")
     parser.add_argument('--dim_feedforward', default=2048, type=int,
                         help="Intermediate size of the feedforward layers in the transformer blocks")
-    parser.add_argument('--hidden_dim', default=256, type=int,
+    parser.add_argument('--hidden_dim', default=512, type=int,
                         help="Size of the embeddings (dimension of the transformer)")
     parser.add_argument('--dropout', default=0.1, type=float,
                         help="Dropout applied in the transformer")
@@ -88,8 +86,6 @@ def get_args_parser():
                         help="Dropout applied in the vision-language transformer")
     parser.add_argument('--vl_nheads', default=8, type=int,
                         help="Number of attention heads inside the vision-language transformer's attentions")
-    parser.add_argument('--vl_hidden_dim', default=256, type=int,
-                        help='Size of the embeddings (dimension of the vision-language transformer)')
     parser.add_argument('--vl_dim_feedforward', default=2048, type=int,
                         help="Intermediate size of the feedforward layers in the vision-language transformer blocks")
     parser.add_argument('--vl_enc_layers', default=6, type=int,
@@ -127,6 +123,9 @@ def get_args_parser():
     # evalutaion options
     parser.add_argument('--eval_set', default='text', type=str)
     parser.add_argument('--eval_model', default='', type=str)
+
+    # prompt
+    parser.add_argument('--prompt_length', default=0, type=int)
 
     return parser
 
