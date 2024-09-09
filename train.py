@@ -18,6 +18,7 @@ from models import build_model
 from datasets import build_dataset
 from engine import train_one_epoch, validate
 import clip
+import matplotlib.pyplot as plt
 
 
 def get_args_parser():
@@ -112,8 +113,11 @@ def get_args_parser():
     parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
     
     # prompt
-    parser.add_argument('--prompt_length', default=0, type=int,
-                        help='length of prompt')
+    parser.add_argument('--text_prompt_length', default=0, type=int,
+                        help='length of text prompt')
+    parser.add_argument('--visual_prompt_length', default=0, type=int,
+                        help='length of visual prompt')
+    parser.add_argument('--drop_prompt', dest='drop_prompt', default=False, action='store_true', help='if discard prompts at vl transformer')
     
     return parser
 
@@ -148,9 +152,6 @@ def main(args):
                    {"params": visu_param, "lr": args.lr_visu},
                    {"params": text_param, "lr": args.lr_text},
                    ]
-    visu_param = [p for n, p in model_without_ddp.named_parameters() if "visumodel" in n and p.requires_grad]
-    text_param = [p for n, p in model_without_ddp.named_parameters() if "textmodel" in n and p.requires_grad]
-    rest_param = [p for n, p in model_without_ddp.named_parameters() if (("visumodel" not in n) and ("textmodel" not in n) and p.requires_grad)]
     
     
     # using RMSProp or AdamW
@@ -219,6 +220,7 @@ def main(args):
     print("Start training")
     start_time = time.time()
     best_accu = 0
+    accuracy = [0]
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             sampler_train.set_epoch(epoch)
@@ -227,7 +229,8 @@ def main(args):
         )
         lr_scheduler.step()
 
-        val_stats = validate(args, model, data_loader_val, device)
+        val_stats, accu = validate(args, model, data_loader_val, device)
+        accuracy.append(accu)
         
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                      **{f'validation_{k}': v for k, v in val_stats.items()},
@@ -260,6 +263,17 @@ def main(args):
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
+
+    # plot
+    epochs = [i for i in range(0, args.epochs+1)]
+    plt.figure(figsize=(10, 6))
+    plt.plot(epochs, accuracy, marker='o', linestyle='-', color='blue', label='Accuracy vs epochs')
+    plt.xlabel('Num Epochs')
+    plt.ylabel('Accuracy')
+    plt.title(f'Accuracy vs Epochs, Prompt Length {args.text_prompt_length}, RefCOCO testA')
+    plt.grid(True)
+    plt.legend()
+    plt.savefig(f'accuracy_vs_epochs_refcoco_test_a_{args.text_prompt_length}.png')  # Save the plot as a PNG file
 
 
 if __name__ == '__main__':

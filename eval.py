@@ -49,10 +49,6 @@ def get_args_parser():
     # Model parameters
     parser.add_argument('--model_name', type=str, default='TransVG',
                         help="Name of model to be exploited.")
-    
-    # Transformers in two branches
-    parser.add_argument('--bert_enc_num', default=12, type=int)
-    parser.add_argument('--detr_enc_num', default=6, type=int)
 
     # CLIP parameters
     # * Backbone
@@ -108,8 +104,6 @@ def get_args_parser():
                         help='device to use for training / testing')
     parser.add_argument('--seed', default=13, type=int)
     parser.add_argument('--resume', default='', help='resume from checkpoint')
-    parser.add_argument('--detr_model', default='./saved_models/detr-r50.pth', type=str, help='detr model')
-    parser.add_argument('--bert_model', default='bert-base-uncased', type=str, help='bert model')
     parser.add_argument('--light', dest='light', default=False, action='store_true', help='if use smaller model')
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='start epoch')
@@ -125,7 +119,11 @@ def get_args_parser():
     parser.add_argument('--eval_model', default='', type=str)
 
     # prompt
-    parser.add_argument('--prompt_length', default=0, type=int)
+    parser.add_argument('--text_prompt_length', default=0, type=int,
+                        help='length of text prompt')
+    parser.add_argument('--visual_prompt_length', default=0, type=int,
+                        help='length of visual prompt')
+    parser.add_argument('--drop_prompt', dest='drop_prompt', default=False, action='store_true', help='if discard prompts at vl transformer')
 
     return parser
 
@@ -175,9 +173,9 @@ def main(args):
 
     # output log
     output_dir = Path(args.output_dir)
-    if args.output_dir and utils.is_main_process():
-        with (output_dir / "eval_log.txt").open("a") as f:
-            f.write(str(args) + "\n")
+    # if args.output_dir and utils.is_main_process():
+    #     with (output_dir / "eval_log.txt").open("a") as f:
+    #         f.write(str(args) + "\n")
     
     start_time = time.time()
     

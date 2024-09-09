@@ -221,20 +221,25 @@ class VisionTransformer(nn.Module):
         self.ln_post = LayerNorm(width)
         self.proj = nn.Parameter(scale * torch.randn(width, output_dim))
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor, visual_prompt):
         x = self.conv1(x)  # shape = [*, width, grid, grid]
         x = x.reshape(x.shape[0], x.shape[1], -1)  # shape = [*, width, grid ** 2]
         x = x.permute(0, 2, 1)  # shape = [*, grid ** 2, width]
-        x = torch.cat([self.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device), x], dim=1)  # shape = [*, grid ** 2 + 1, width]
+        x = torch.cat([self.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device), x], dim=1)  # shape = [batch_size, grid ** 2 + 1, width]
         x = x + self.positional_embedding.to(x.dtype)
+
+        # NEW: visual prompt
+        with torch.enable_grad():
+            expanded_prompt = visual_prompt.expand(x.shape[0], -1, -1)
+            x = torch.cat([expanded_prompt, x], dim=1)
+        
         x = self.ln_pre(x)
 
         x = x.permute(1, 0, 2)  # NLD -> LND
         x = self.transformer(x)
         x = x.permute(1, 0, 2)  # LND -> NLD
 
-        # TODO: ModifiedCLIP
-        # x = self.ln_post(x[:, 0, :])
+        # strcuture changed to output all tokens
         x = self.ln_post(x)
 
         if self.proj is not None:
@@ -257,10 +262,11 @@ class ModifiedCLIP(nn.Module):
                  vocab_size: int,
                  transformer_width: int,
                  transformer_heads: int,
-                 transformer_layers: int
+                 transformer_layers: int,
+                 # NEW: argument to change CLIP structure
+                 args
                  ):
         super().__init__()
-
         self.context_length = context_length
 
         if isinstance(vision_layers, (tuple, list)):
@@ -287,7 +293,7 @@ class ModifiedCLIP(nn.Module):
             width=transformer_width,
             layers=transformer_layers,
             heads=transformer_heads,
-            attn_mask=self.build_attention_mask()
+            attn_mask=self.build_attention_mask(args)
         )
 
 
@@ -298,9 +304,6 @@ class ModifiedCLIP(nn.Module):
 
         self.text_projection = nn.Parameter(torch.empty(transformer_width, embed_dim))
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
-
-        # add new linguistic model
-        # self.linguistic = CLIPTextEncoder(self)
 
         self.initialize_parameters()
 
@@ -333,10 +336,10 @@ class ModifiedCLIP(nn.Module):
         if self.text_projection is not None:
             nn.init.normal_(self.text_projection, std=self.transformer.width ** -0.5)
 
-    def build_attention_mask(self):
+    def build_attention_mask(self, args):
         # lazily create causal attention mask, with full attention between the vision tokens
         # pytorch uses additive attention mask; fill with -inf
-        mask = torch.empty(self.context_length, self.context_length)
+        mask = torch.empty(self.context_length + args.text_prompt_length, self.context_length + args.text_prompt_length)
         mask.fill_(float("-inf"))
         mask.triu_(1)  # zero out the lower diagonal
         return mask
@@ -348,33 +351,23 @@ class ModifiedCLIP(nn.Module):
     def encode_image(self, image):
         return self.visual(image.type(self.dtype))
 
-    def encode_text(self, text):
+    def encode_text(self, text, text_prompt):
         x = self.token_embedding(text).type(self.dtype)  # [batch_size, n_ctx, d_model]
 
         x = x + self.positional_embedding.type(self.dtype)
+
+        # NEW: concatenate prompt to tokens
+        num_text_token = text.shape[1]
+        with torch.enable_grad():
+            expanded_prompt = text_prompt.expand(text.shape[0], -1, -1)
+            x = torch.cat([expanded_prompt, x], dim=1)
+        # x = x[:, :num_text_token, :]
+
         x = x.permute(1, 0, 2)  # NLD -> LND
         x = self.transformer(x)
         x = x.permute(1, 0, 2)  # LND -> NLD
         x = self.ln_final(x).type(self.dtype)
 
-        # x.shape = [batch_size, n_ctx, transformer.width]
-        # take features from the eot embedding (eot_token is the highest number in each sequence)
-        # TODO: ModifiedCLIP
-        # x = x[torch.arange(x.shape[0]), text.argmax(dim=-1)] @ self.text_projection
-        x = x @ self.text_projection
-        return x
-    
-    def encode_token(self, token):
-        x = token + self.positional_embedding.type(self.dtype)
-        x = x.permute(1, 0, 2)  # NLD -> LND
-        x = self.transformer(x)
-        x = x.permute(1, 0, 2)  # LND -> NLD
-        x = self.ln_final(x).type(self.dtype)
-
-        # x.shape = [batch_size, n_ctx, transformer.width]
-        # take features from the eot embedding (eot_token is the highest number in each sequence)
-        # TODO: ModifiedCLIP
-        # x = x[torch.arange(x.shape[0]), text.argmax(dim=-1)] @ self.text_projection
         x = x @ self.text_projection
         return x
 
@@ -394,32 +387,6 @@ class ModifiedCLIP(nn.Module):
         # shape = [global_batch_size, global_batch_size]
         return logits_per_image, logits_per_text
 
-
-# similarly, add a text model
-# class CLIPTextEncoder(torch.nn.Module):
-#     def __init__(self, clip_model: ModifiedCLIP):
-#         super(CLIPTextEncoder, self).__init__()
-#         self.token_embedding = clip_model.token_embedding
-#         self.positional_embedding = clip_model.positional_embedding
-#         self.transformer = clip_model.transformer
-#         self.ln_final = clip_model.ln_final
-#         self.text_projection = clip_model.text_projection
-
-#     def forward(self, text):
-#         x = self.token_embedding(text).type(self.dtype)  # [batch_size, n_ctx, d_model]
-
-#         x = x + self.positional_embedding.type(self.dtype)
-#         x = x.permute(1, 0, 2)  # NLD -> LND
-#         x = self.transformer(x)
-#         x = x.permute(1, 0, 2)  # LND -> NLD
-#         x = self.ln_final(x).type(self.dtype)
-
-#         # x.shape = [batch_size, n_ctx, transformer.width]
-#         # take features from the eot embedding (eot_token is the highest number in each sequence)
-#         # TODO: ModifiedCLIP
-#         # x = x[torch.arange(x.shape[0]), text.argmax(dim=-1)] @ self.text_projection
-#         x = x @ self.text_projection
-#         return x
 
 
 def convert_weights(model: nn.Module):
@@ -446,7 +413,8 @@ def convert_weights(model: nn.Module):
     model.apply(_convert_weights_to_fp16)
 
 
-def build_model(state_dict: dict):
+# MODIFIED: add args to change CLIP's structure
+def build_model(state_dict: dict, args):
     vit = "visual.proj" in state_dict
 
     if vit:
@@ -474,7 +442,7 @@ def build_model(state_dict: dict):
     model = ModifiedCLIP(
         embed_dim,
         image_resolution, vision_layers, vision_width, vision_patch_size,
-        context_length, vocab_size, transformer_width, transformer_heads, transformer_layers
+        context_length, vocab_size, transformer_width, transformer_heads, transformer_layers, args
     )
 
     for key in ["input_resolution", "context_length", "vocab_size"]:

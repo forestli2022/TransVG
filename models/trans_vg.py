@@ -11,17 +11,22 @@ from utils.box_utils import xywh2xyxy
 class TransVG(nn.Module):
     def __init__(self, args):
         super(TransVG, self).__init__()
+        self.args = args
         divisor = get_clip_divisor(args.backbone)
-        self.num_visu_token = int((args.imsize / divisor) ** 2) + 1
-        self.num_text_token = args.max_query_len
 
-        self.modified_clip, _ = load(args.backbone, args.device)
+        self.modified_clip, _ = load(args.backbone, args, device=args.device)
+        for param in self.modified_clip.parameters():
+            param.requires_grad = False
+
         hidden_dim = self.modified_clip.visual.output_dim
-        print(hidden_dim)
         self.modified_clip = self.modified_clip.float().to(args.device)
         self.visumodel = self.modified_clip.visual
 
-        num_total = self.num_visu_token + self.num_text_token + 1
+        # MODIFIED: drop prompts at Fusion Encoder
+        num_visu_token = int((args.imsize / divisor) ** 2) + 1 + (args.visual_prompt_length if not args.drop_prompt else 0)
+        num_text_token = args.max_query_len + (args.text_prompt_length if not args.drop_prompt else 0)
+        num_total = num_visu_token + num_text_token + 1
+        self.drop_prompt = args.drop_prompt
         self.vl_pos_embed = nn.Embedding(num_total, hidden_dim)
         self.reg_token = nn.Embedding(1, hidden_dim)
 
@@ -29,7 +34,8 @@ class TransVG(nn.Module):
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
 
         # prompt
-        self.prompt = torch.randn(1, args.prompt_length, hidden_dim, requires_grad=True).to(args.device)
+        self.text_prompt = nn.parameter.Parameter(torch.randn(1, args.text_prompt_length, hidden_dim))
+        self.visual_prompt = nn.parameter.Parameter(torch.randn(1, args.visual_prompt_length, self.visumodel.transformer.width))
 
     def preprocess(self, img_data):
         # preprocess img_data as NestedTensor
@@ -40,21 +46,20 @@ class TransVG(nn.Module):
         bs = img_data.tensors.shape[0]
         preprocessed_img_data = self.preprocess(img_data)
 
-        # visual encoder
-        with torch.no_grad():
-            visu_src = self.visumodel(preprocessed_img_data)
+        # visual encoder:
+        # [batch_size, w, h, d_model]
+        visu_src = self.visumodel(preprocessed_img_data, self.visual_prompt)
         visu_src = visu_src.permute(1, 0, 2)
 
-        # add prompts to tokens
-        tokens = self.modified_clip.token_embedding(text_data.tensors).type(self.modified_clip.dtype)
-        expanded_prompt = self.prompt.expand(bs, -1, -1)
-        tokens = torch.cat([expanded_prompt, tokens], dim=1)
-        tokens = tokens[:, :self.num_text_token, :]
-
-        # language encoder
-        with torch.no_grad():
-            text_src = self.modified_clip.encode_token(tokens)
+        # language encoder:
+        # [batch_size, n_ctx, d_model]
+        text_src = self.modified_clip.encode_text(text_data.tensors, self.text_prompt)
         text_src = text_src.permute(1, 0, 2)
+
+        # drop prompt after encoding
+        if self.drop_prompt:
+            text_src = text_src[self.args.text_prompt_length:]
+            visu_src = visu_src[self.args.visual_prompt_length:]
 
         # target regression token
         tgt_src = self.reg_token.weight.unsqueeze(1).repeat(1, bs, 1)

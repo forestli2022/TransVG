@@ -89,7 +89,7 @@ def validate(args, model: torch.nn.Module, data_loader: Iterable, device: torch.
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     stats = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
-    return stats
+    return stats, stats['accu']
 
 
 @torch.no_grad()
