@@ -3,7 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from pytorch_pretrained_bert.modeling import BertModel
-from .clip.clip import load
+from .visual_model.detr import build_detr
+from .language_model.bert import build_bert
 from .vl_transformer import build_vl_transformer
 from utils.box_utils import xywh2xyxy
 
@@ -11,27 +12,27 @@ from utils.box_utils import xywh2xyxy
 class TransVG(nn.Module):
     def __init__(self, args):
         super(TransVG, self).__init__()
-        self.args = args
-        divisor = get_clip_divisor(args.backbone)
+        hidden_dim = args.vl_hidden_dim
+        divisor = 16 if args.dilation else 32
+        self.num_visu_token = int((args.imsize / divisor) ** 2)
+        self.num_text_token = args.max_query_len
 
-        self.modified_clip, _ = load(args.backbone, args, device=args.device)
-        for param in self.modified_clip.parameters():
-            param.requires_grad = False
+        self.visumodel = build_detr(args)
+        self.textmodel = build_bert(args)
 
-        hidden_dim = self.modified_clip.visual.output_dim
-        self.modified_clip = self.modified_clip.float().to(args.device)
-        self.visumodel = self.modified_clip.visual
-
-        # MODIFIED: drop prompts at Fusion Encoder
-        num_visu_token = int((args.imsize / divisor) ** 2) + 1 + (args.visual_prompt_length if not args.drop_prompt else 0)
-        num_text_token = args.max_query_len + (args.text_prompt_length if not args.drop_prompt else 0)
-        num_total = num_visu_token + num_text_token + 1
-        self.drop_prompt = args.drop_prompt
+        num_total = self.num_visu_token + self.num_text_token + 1
         self.vl_pos_embed = nn.Embedding(num_total, hidden_dim)
         self.reg_token = nn.Embedding(1, hidden_dim)
 
-        self.vl_transformer = build_vl_transformer(args, vl_hidden_dim=hidden_dim)
+        self.visu_proj = nn.Linear(self.visumodel.num_channels, hidden_dim)
+        self.text_proj = nn.Linear(self.textmodel.num_channels, hidden_dim)
+
+        self.vl_transformer = build_vl_transformer(args)
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
+
+        # NEW: freeze every thing
+        for param in self.parameters():
+            param.requires_grad = False
 
         # prompt
         self.text_prompt = nn.parameter.Parameter(torch.randn(1, args.text_prompt_length, hidden_dim))
@@ -44,34 +45,32 @@ class TransVG(nn.Module):
 
     def forward(self, img_data, text_data):
         bs = img_data.tensors.shape[0]
-        preprocessed_img_data = self.preprocess(img_data)
 
-        # visual encoder:
-        # [batch_size, w, h, d_model]
-        visu_src = self.visumodel(preprocessed_img_data, self.visual_prompt)
-        visu_src = visu_src.permute(1, 0, 2)
+        # visual backbone
+        visu_mask, visu_src = self.visumodel(img_data, self.visual_prompt)
+        visu_src = self.visu_proj(visu_src) # (N*B)xC
 
-        # language encoder:
-        # [batch_size, n_ctx, d_model]
-        text_src = self.modified_clip.encode_text(text_data.tensors, self.text_prompt)
+        # language bert
+        text_fea = self.textmodel(text_data, self.visual_prompt)
+        text_src, text_mask = text_fea.decompose()
+        assert text_mask is not None
+        text_src = self.text_proj(text_src)
+        # permute BxLenxC to LenxBxC
         text_src = text_src.permute(1, 0, 2)
-
-        # drop prompt after encoding
-        if self.drop_prompt:
-            text_src = text_src[self.args.text_prompt_length:]
-            visu_src = visu_src[self.args.visual_prompt_length:]
+        text_mask = text_mask.flatten(1)
 
         # target regression token
         tgt_src = self.reg_token.weight.unsqueeze(1).repeat(1, bs, 1)
-
+        tgt_mask = torch.zeros((bs, 1)).to(tgt_src.device).to(torch.bool)
+        
         vl_src = torch.cat([tgt_src, text_src, visu_src], dim=0)
+        vl_mask = torch.cat([tgt_mask, text_mask, visu_mask], dim=1)
         vl_pos = self.vl_pos_embed.weight.unsqueeze(1).repeat(1, bs, 1)
 
-        vg_hs = self.vl_transformer(vl_src, None, vl_pos) # (1+L+N)xBxC
+        vg_hs = self.vl_transformer(vl_src, vl_mask, vl_pos) # (1+L+N)xBxC
         vg_hs = vg_hs[0]
 
         pred_box = self.bbox_embed(vg_hs).sigmoid()
-
 
         return pred_box
 
